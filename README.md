@@ -15,14 +15,11 @@ Both at the same time, over a single USB cable (+ 24 V motor power) — somethin
 
 ## Why this exists
 
-The official Mellow firmware is **standalone**: the buffer auto-feeds on its own but the board does **not** talk Klipper (no USB MCU, runout has to go through a separate signal wire).
+The official Mellow firmware is **standalone**: the buffer auto-feeds on its own but the board does **not** talk Klipper (no USB MCU; runout has to go through a separate signal wire).
 
-The community Klipper integrations ([river29](https://github.com/river29/Mellow-LLLBufferPLUS-klipper), [ss1gohan13](https://github.com/ss1gohan13/BufferPLUS-klipper)) flash **stock Klipper** and re-implement the buffer with **host-side g-code macros**. That works, but:
+The community Klipper integrations ([river29](https://github.com/river29/Mellow-LLLBufferPLUS-klipper), [ss1gohan13](https://github.com/ss1gohan13/BufferPLUS-klipper)) flash **stock Klipper** and re-implement the buffer with **host-side g-code macros**. That works, but feed bursts go through the **g-code queue** (latency, can lag during long `G1 E` moves) and they switch the active extruder, which can **misdirect extrusion during a print**.
 
-- feed bursts go through the **g-code queue** → latency, and they can lag behind during long `G1 E` moves;
-- they switch the active extruder (`ACTIVATE_EXTRUDER`) which can **misdirect extrusion during a print** if not carefully guarded.
-
-This project takes the other route: the buffer state machine runs **inside the MCU firmware** as a Klipper task — zero g-code-queue latency, no active-extruder juggling, and it can't stall a print. The host only reads the entrance sensor on `PB7`.
+This project runs the buffer state machine **inside the MCU firmware** as a Klipper task — zero g-code-queue latency, no active-extruder juggling, can't stall a print. The host only reads the entrance sensor on `PB7`.
 
 | | Standalone (Mellow) | Stock Klipper + host macros | **This firmware** |
 |---|---|---|---|
@@ -62,15 +59,72 @@ Photo-sensor convention is taken **verbatim** from the source: *blocked = 1, cle
 
 ## Installation
 
-### 1. Add the firmware file
+> Done from your Klipper host (e.g. a Raspberry Pi). Commands assume `~/klipper` and `~/katapult` ([Arksine/katapult](https://github.com/Arksine/katapult)) are cloned, the Klipper build toolchain is installed, and `dfu-util` is available (`sudo apt install dfu-util`).
 
-Copy `src/buffer.c` into your Klipper tree:
+### Step 0 — Find your buffer & power it
+
+Connect the buffer's USB to the host **and** give it **24 V on VIN** (the motor needs it; the firmware configures the TMC at first boot, so 24 V must be present then).
+
+List USB serial devices to identify the board and note your **unique chip ID** (you'll reuse it in `printer.cfg`):
+
+```bash
+ls /dev/serial/by-id/
+# e.g. usb-Klipper_stm32f072xb_3C003A...3720-if00   (or a Mellow / katapult id)
+#                            └──────── your XXXXXX ────────┘
+```
+
+### Step 1 — Enter DFU mode (to install Katapult)
+
+On the buffer board: **hold BOOT**, tap **RESET**, release **RESET**, then release **BOOT**. Confirm (needs `sudo`):
+
+```bash
+sudo dfu-util -l
+# → Found DFU: [0483:df11] ... name="@Internal Flash  /0x08000000/064*0002Kg"
+```
+
+### Step 2 — Back up the existing firmware (recommended)
+
+```bash
+sudo dfu-util -a 0 -d 0483:df11 -U ~/lll_backup_flash.bin       -s 0x08000000:0x20000
+sudo dfu-util -a 1 -d 0483:df11 -U ~/lll_backup_optionbytes.bin            # option bytes
+```
+
+### Step 3 — Build & flash Katapult (one-time bootloader)
+
+Katapult lets you flash all **future** updates over USB without opening the case.
+
+```bash
+cd ~/katapult
+make menuconfig
+```
+
+- Micro-controller Architecture: **STMicroelectronics STM32**
+- Processor model: **STM32F072**
+- Clock Reference: **8 MHz crystal**
+- Communication interface: **USB (on PA11/PA12)**
+- Application start offset: **8 KiB**
+- Support bootloader entry on rapid double click of reset: **OFF** ⚠️ *(the LLL Plus has no usable reset button; leaving this ON makes the board fail to enumerate)*
+
+```bash
+make clean && make
+# board still in DFU (Step 1); flash with mass-erase so no stale app remains:
+sudo dfu-util -a 0 -d 0483:df11 -D out/katapult.bin -s 0x08000000:force:mass-erase:leave
+```
+
+Re-plug USB and confirm Katapult enumerates:
+
+```bash
+ls /dev/serial/by-id/
+# → usb-katapult_stm32f072xb_XXXXXX-if00
+```
+
+### Step 4 — Add this firmware to Klipper
 
 ```bash
 cp src/buffer.c ~/klipper/src/buffer.c
 ```
 
-Add **one line** to `~/klipper/src/Makefile` (only compiles it for the F072 buffer, never for your main board):
+Add **one line** to `~/klipper/src/Makefile` (only compiled for the F072 buffer, never for your main board):
 
 ```make
 src-$(CONFIG_MACH_STM32F072) += buffer.c
@@ -78,13 +132,16 @@ src-$(CONFIG_MACH_STM32F072) += buffer.c
 
 > ⚠️ This line is reverted by `git pull` on the Klipper tree — re-add it after updating Klipper. `buffer.c` itself is untracked and survives.
 
-### 2. Build Klipper
+### Step 5 — Build Klipper
 
-`make menuconfig`:
+```bash
+cd ~/klipper
+make menuconfig
+```
 
-- Micro-controller: **STMicroelectronics STM32**
+- Micro-controller Architecture: **STMicroelectronics STM32**
 - Processor model: **STM32F072**
-- Bootloader offset: **8 KiB** (to match Katapult)
+- Bootloader offset: **8 KiB bootloader** *(must match Katapult)*
 - Clock Reference: **8 MHz crystal**
 - Communication interface: **USB (on PA11/PA12)**
 
@@ -92,26 +149,17 @@ src-$(CONFIG_MACH_STM32F072) += buffer.c
 make clean && make
 ```
 
-### 3. Install Katapult (one-time, recommended)
-
-Lets you flash all future updates **over USB**, without opening the case. Build Katapult for F072 / 8 MHz / USB PA11-PA12 / **8 KiB offset** and **without** double-reset entry (the LLL Plus has no convenient reset button), then flash it once via DFU with a mass-erase:
-
-```bash
-sudo dfu-util -a 0 -d 0483:df11 -D ~/katapult/out/katapult.bin \
-  -s 0x08000000:force:mass-erase:leave
-```
-
-### 4. Flash the firmware (over USB via Katapult)
+### Step 6 — Flash Klipper over USB (via Katapult)
 
 ```bash
 ~/klippy-env/bin/python3 ~/katapult/scripts/flashtool.py \
   -f ~/klipper/out/klipper.bin \
-  -d /dev/serial/by-id/usb-Klipper_stm32f072xb_XXXXXX-if00
+  -d /dev/serial/by-id/usb-katapult_stm32f072xb_XXXXXX-if00
 ```
 
-> Use the **klippy-env** Python — it has `pyserial` (the system Python usually doesn't).
+> Use the **klippy-env** Python — it has `pyserial` (the system Python usually doesn't). After flashing, the board re-enumerates as `usb-Klipper_stm32f072xb_XXXXXX-if00`.
 
-### 5. printer.cfg
+### Step 7 — printer.cfg
 
 ```ini
 [mcu LLL_PLUS]
@@ -125,17 +173,27 @@ runout_gcode:
     PAUSE
 ```
 
-**No motor/stepper/TMC section** — the firmware owns the motor; the host only reads `PB7`.
+**No motor/stepper/TMC section** — the firmware owns the motor; the host only reads `PB7`. Then `FIRMWARE_RESTART`.
 
-### Power
+---
 
-Provide **24 V before USB** (or have it present at boot): the TMC is configured on the first task iteration, so it must be powered then.
+## Updating later (no case opening)
+
+```bash
+cd ~/klipper && make clean && make          # (re-add the Makefile line if a git pull removed it)
+~/klippy-env/bin/python3 ~/katapult/scripts/flashtool.py \
+  -f ~/klipper/out/klipper.bin \
+  -d /dev/serial/by-id/usb-Klipper_stm32f072xb_XXXXXX-if00
+# then FIRMWARE_RESTART
+```
+
+`flashtool` reboots the running app into Katapult over USB automatically — you can target the **Klipper** serial directly, no buttons.
 
 ---
 
 ## TMC2208 register values
 
-Derived directly from the parameters of Mellow's firmware (via the `TMCStepper` library it uses), not guessed:
+Derived directly from Mellow's firmware parameters (via the `TMCStepper` library it uses), not guessed:
 
 | Register | Value | Notes |
 |---|---|---|
@@ -144,6 +202,8 @@ Derived directly from the parameters of Mellow's firmware (via the `TMCStepper` 
 | IHOLD_IRUN | `0x00010F07` | IRUN=15, IHOLD=7 (≈ `rms_current(500)` @ Rsense 0.11) |
 | PWMCONF | `0xC10D0024` | pwm_autoscale |
 | VACTUAL | `77575` | 260 rpm, 64 µsteps |
+
+Speed/current can be changed in `src/buffer.c` (`SPEED_RPM`, the register values) and re-flashed.
 
 ---
 
