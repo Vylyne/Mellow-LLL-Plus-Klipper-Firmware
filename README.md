@@ -134,6 +134,13 @@ src-$(CONFIG_MACH_STM32F072) += buffer.c
 
 ### Step 5 — Build Klipper
 
+> ⚠️ `make menuconfig` overwrites `~/klipper/.config`. If you build other MCUs (your main board, toolhead…) from this same tree, **back up its config first** and restore it afterwards:
+> ```bash
+> cp ~/klipper/.config ~/klipper/.config.mainboard   # backup
+> # ...build & flash the buffer...
+> cp ~/klipper/.config.mainboard ~/klipper/.config    # restore later
+> ```
+
 ```bash
 cd ~/klipper
 make menuconfig
