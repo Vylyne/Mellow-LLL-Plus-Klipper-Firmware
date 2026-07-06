@@ -70,7 +70,9 @@ class FilamentWatcher:
             gcode = self.printer.lookup_object('gcode')
             template = self.printer.lookup_object('gcode_macro').load_template(
                 self.config, 'runout_gcode')
-            gcode.run_script(template.render())
+            context = template.create_template_context()
+            context['params'] = {'TOOL': self.name}
+            gcode.run_script(template.render(context))
 
 def load_config_prefix(config):
     return FilamentWatcher(config)
