@@ -31,27 +31,27 @@
 // ------------------------------------------------------------------
 #define GPIO(PORT, NUM) (((PORT) - 'A') * 16 + (NUM))
 
-#define HALL1_PIN               GPIO('B', 2)    // 光感3 -> pos3 -> Back
-#define HALL2_PIN               GPIO('B', 3)    // 光感2 -> pos2 -> Stop
-#define HALL3_PIN               GPIO('B', 4)    // 光感1 -> pos1 -> Forward
-#define FIL_PIN                 GPIO('B', 7)    // ENDSTOP_3 / 耗材开关 (filament switch)
-#define KEY_INTERNAL_RETRACT    GPIO('B', 13)   // KEY1 后退 (retract)
-#define KEY_INTERNAL_FEED       GPIO('B', 12)   // KEY2 前进 (feed)
-#define KEY_EXTERNAL_RETRACT    GPIO('A', 2)    // Exposed 3 pin header using for external Retract button
-#define KEY_EXTERNAL_FEED       GPIO('A', 3)    // Exposed 3 pin header using for external feed buttons
-#define FRONT_SIG_PIN           GPIO('B', 5)    // signal carte mère "avance" (actif bas)
-#define BACK_SIG_PIN            GPIO('B', 6)    // signal carte mère "recule" (actif bas)
-#define EXT1_PIN                GPIO('C', 13)   // EXTENSION_PIN1
-#define EXT2_PIN                GPIO('C', 14)   // EXTENSION_PIN2
-#define EN_PIN                  GPIO('A', 6)    // TMC enable (actif bas)
-#define UART_PIN                GPIO('B', 1)    // TMC2208 single-wire UART (PDN_UART)
+#define HALL1_PIN GPIO('B', 2)             // 光感3 -> pos3 -> Back
+#define HALL2_PIN GPIO('B', 3)             // 光感2 -> pos2 -> Stop
+#define HALL3_PIN GPIO('B', 4)             // 光感1 -> pos1 -> Forward
+#define FIL_PIN GPIO('B', 7)               // ENDSTOP_3 / 耗材开关 (filament switch)
+#define KEY_INTERNAL_RETRACT GPIO('B', 13) // KEY1 后退 (retract)
+#define KEY_INTERNAL_FEED GPIO('B', 12)    // KEY2 前进 (feed)
+#define KEY_EXTERNAL_RETRACT GPIO('A', 2)  // Exposed 3 pin header using for external Retract button
+#define KEY_EXTERNAL_FEED GPIO('A', 3)     // Exposed 3 pin header using for external feed buttons
+#define FRONT_SIG_PIN GPIO('B', 5)         // signal carte mère "avance" (actif bas)
+#define BACK_SIG_PIN GPIO('B', 6)          // signal carte mère "recule" (actif bas)
+#define EXT1_PIN GPIO('C', 13)             // EXTENSION_PIN1
+#define EXT2_PIN GPIO('C', 14)             // EXTENSION_PIN2
+#define EN_PIN GPIO('A', 6)                // TMC enable (actif bas)
+#define UART_PIN GPIO('B', 1)              // TMC2208 single-wire UART (PDN_UART)
 
 // ------------------------------------------------------------------
 // Paramètres (repris du standalone, AUCUNE modif)
 // ------------------------------------------------------------------
 // VACTUAL = SPEED * microsteps * 200 / 60 / 0.715   (buffer.cpp)
 //   SPEED = 260 r/min, microsteps = 64  -> 77575 (idem cast int du standalone)
-#define SPEED_RPM 260
+#define SPEED_RPM 400
 #define MICROSTEPS_DIV 64
 #define VACTUAL_MAG ((int32_t)((int64_t)SPEED_RPM * MICROSTEPS_DIV * 200 / 60 * 1000 / 715))
 
@@ -204,6 +204,37 @@ tmc_configure(void)
 }
 
 // ------------------------------------------------------------------
+// Host command support.
+// ------------------------------------------------------------------
+
+// constants for host driven operation support
+enum
+{
+    HMODE_AUTO = 0,
+    HMODE_FORWARD,
+    HMODE_BACK,
+    HMODE_STOP
+};
+static uint8_t host_mode = HMODE_AUTO;
+static uint32_t host_mode_deadline;
+
+void command_buffer_set_mode(uint32_t *args)
+{
+    host_mode = args[0];
+    uint32_t timeout_ms = args[1];
+    host_mode_deadline = timer_read_time() + MS_TICKS(timeout_ms);
+}
+DECL_COMMAND(command_buffer_set_mode, "buffer_set_mode mode=%c timeout=%u");
+
+void command_buffer_query_state(uint32_t *args)
+{
+    sendf("buffer_state hall1=%c hall2=%c hall3=%c fil=%c error=%c state=%c host_mode=%c",
+        gpio_in_read(hall1), gpio_in_read(hall2), gpio_in_read(hall3),
+        gpio_in_read(fil), is_error, last_state, host_mode);
+}
+DECL_COMMAND(command_buffer_query_state, "buffer_query_state");
+
+// ------------------------------------------------------------------
 // Init (au boot) — GPIO uniquement (self-contained). Port buffer_sensor_init.
 // ------------------------------------------------------------------
 void buffer_init(void)
@@ -280,7 +311,7 @@ process_buttons(void)
 {
     uint32_t now = timer_read_time();
     uint8_t k1 = gpio_in_read(key_internal_retract) && gpio_in_read(key_external_retract); // 1=relâché, 0=pressé
-    uint8_t k2 = gpio_in_read(key_internal_feed) && gpio_in_read(key_external_feed) ;
+    uint8_t k2 = gpio_in_read(key_internal_feed) && gpio_in_read(key_external_feed);
 
     // détection de fronts (remplace key_it_callback CHANGE)
     if (key1_prev && !k1)
@@ -420,6 +451,19 @@ void buffer_task(void)
 
     if (process_buttons()) // boutons/signaux = priorité (manuel)
         return;
+
+    // Adding support for Host commanded moves, while allowing hardware buttons to override.
+    if (host_mode != HMODE_AUTO) {
+        if (timer_read_time() > host_mode_deadline) {
+            host_mode = HMODE_AUTO;   // watchdog: host went silent, don't run forever
+        } else {
+            uint8_t want = (host_mode == HMODE_FORWARD) ? ST_FORWARD
+                            : (host_mode == HMODE_BACK)    ? ST_BACK
+                            : ST_STOP;
+            apply_state(want);
+            return;
+        }
+    }
 
     // Plus de filament à l'entrée (PB7=1) -> stop (le runout print = host sur PB7)
     if (gpio_in_read(fil))
