@@ -3,6 +3,7 @@ set -euo pipefail
 
 KLIPPER_EXTRAS="$HOME/klipper/klippy/extras"
 CONFIG_DIR="$HOME/printer_data/config"
+SRC_DST="$HOME/klipper/src"
 
 unlink_if_symlink() {
     local path="$1"
@@ -19,6 +20,7 @@ unlink_if_symlink() {
 unlink_if_symlink "$KLIPPER_EXTRAS/filament_watcher.py"
 unlink_if_symlink "$KLIPPER_EXTRAS/buffer_manager.py"
 unlink_if_symlink "$CONFIG_DIR/filament_watcher.cfg"
+unlink_if_symlink "$SRC_DST/buffer.c"
 
 echo
 echo "Done. Remove this line from printer.cfg if present, then run FIRMWARE_RESTART:"
