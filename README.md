@@ -1,59 +1,4 @@
-# Mellow FLY LLL Buffer Plus — Klipper MCU Firmware (autonomous auto-feed)
-
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-![MCU](https://img.shields.io/badge/MCU-STM32F072CB-green)
-![Klipper](https://img.shields.io/badge/Klipper-MCU%20firmware-orange)
-
-Custom **Klipper MCU firmware** for the Mellow **FLY LLL Buffer Plus** that brings together the **best of both worlds**:
-
-- 🟢 the **autonomous smart-buffer auto-feed** of Mellow's standalone firmware (hall sensors drive the feed motor *in firmware*, real-time), **and**
-- 🟢 the board running as a **standard Klipper USB MCU**, so the filament-entrance sensor can trigger a **print pause** through Klipper.
-
-Both at the same time, over a single USB cable (+ 24 V motor power) — something neither the stock standalone firmware nor the community host-macro configs can do on their own.
-
----
-
-## Why this exists
-
-The official Mellow firmware is **standalone**: the buffer auto-feeds on its own but the board does **not** talk Klipper (no USB MCU; runout has to go through a separate signal wire).
-
-The community Klipper integrations ([river29](https://github.com/river29/Mellow-LLLBufferPLUS-klipper), [ss1gohan13](https://github.com/ss1gohan13/BufferPLUS-klipper)) flash **stock Klipper** and re-implement the buffer with **host-side g-code macros**. That works, but feed bursts go through the **g-code queue** (latency, can lag during long `G1 E` moves) and they switch the active extruder, which can **misdirect extrusion during a print**.
-
-This project runs the buffer state machine **inside the MCU firmware** as a Klipper task — zero g-code-queue latency, no active-extruder juggling, can't stall a print. The host only reads the entrance sensor on `PB7`.
-
-| | Standalone (Mellow) | Stock Klipper + host macros | **This firmware** |
-|---|---|---|---|
-| Auto-feed | ✅ in-firmware | ⚠️ host macros (queue latency) | ✅ **in-firmware** |
-| Klipper MCU / USB sensor | ❌ | ✅ | ✅ |
-| Risk of disrupting a print | n/a | ⚠️ `ACTIVATE_EXTRUDER` | ✅ none |
-| Runout → print pause | signal wire | USB (PB7) | USB (PB7) |
-
----
-
-## How it works
-
-A small Klipper MCU task (`src/buffer.c`, `DECL_INIT` + `DECL_TASK`) ports the state machine of Mellow's open firmware ([Fly3DTeam/Buffer](https://github.com/Fly3DTeam/Buffer)) and drives the on-board TMC2208 over its single-wire UART (`VACTUAL` velocity mode):
-
-```
-HALL3 (PB4) blocked  → motor FORWARD (push filament)
-HALL2 (PB3) blocked  → motor STOP
-HALL1 (PB2) blocked  → motor BACK (retract)
-ENDSTOP_3 (PB7) = no filament → STOP   (+ host pauses the print)
-```
-
-Photo-sensor convention is taken **verbatim** from the source: *blocked = 1, clear = 0*. Manual **feed/retract buttons** (KEY1/KEY2) and the **mainboard control signals** (PB5/PB6, active-low) are supported too. A 60 s continuous-feed timeout acts as a jam safety.
-
-> The only change versus the standalone is that the button "hold" is handled **event-driven** (non-blocking) instead of the original blocking `while()` loop, because blocking for seconds would break Klipper host comms. Behaviour is identical.
-
-### Pins (STM32F072CB)
-
-| Function | Pin | Function | Pin |
-|---|---|---|---|
-| HALL1 | PB2 | KEY1 (retract) | PB13 |
-| HALL2 | PB3 | KEY2 (feed) | PB12 |
-| HALL3 | PB4 | FRONT signal | PB5 |
-| Entrance switch | PB7 | BACK signal | PB6 |
-| TMC EN | PA6 | TMC UART | PB1 |
+`src/buffer.c` is firmware — it gets compiled and flashed to the buffer board's own MCU (Installation Steps 0–6 below). `klippy_extras/` and `macros/` are host-side — they run as part of Klippy on your Klipper host (Pi/SBC) and only need `install.sh` (no compiling or flashing).
 
 ---
 
@@ -183,23 +128,92 @@ pause_on_runout: True
 - **Simplest — most setups:** `pause_on_runout: True` and nothing else. On runout Klipper runs your normal `PAUSE`, *including the park position your `[gcode_macro PAUSE]` / `[pause_resume]` already defines* (the same one your slicer pause uses). Your park position lives in your `PAUSE` macro — `pause_on_runout` calls it, so you don't repeat it here.
 
 - **Add a notification / lights / etc.:** keep `pause_on_runout: True` and add a `runout_gcode:` — it runs **after** the pause, so use it for *extra* actions (not another pause):
-  ```ini
+```ini
   runout_gcode:
       M118 LLL Plus: filament runout — paused
   insert_gcode:
       M118 LLL Plus: filament reinserted
-  ```
+```
 
 - **Fully custom routine** (your own park macro, `M600`, unload sequence…): set `pause_on_runout: False` and put your macro in `runout_gcode:`:
-  ```ini
+```ini
   pause_on_runout: False
   runout_gcode:
       MY_RUNOUT_MACRO
-  ```
+```
 
 > ⚠️ Don't put a bare `PAUSE` in `runout_gcode` while `pause_on_runout: True` — it's a double pause. And `pause_on_runout`/`PAUSE` both rely on `[pause_resume]` being in your config (standard on virtually all printers).
 
 **No motor/stepper/TMC section** — the firmware owns the motor; the host only reads `PB7`. Then `FIRMWARE_RESTART`.
+
+### Step 8 — Host-side integration (optional)
+
+This step adds two Klipper `extras` modules on top of the firmware above — neither is required for basic auto-feed + runout, which works fully from Step 7 alone.
+
+```bash
+./install.sh
+```
+
+This symlinks `klippy_extras/buffer_manager.py` and `klippy_extras/filament_watcher.py` into `~/klipper/klippy/extras/`, and the example config from `macros/` into `~/printer_data/config/`. Because these are symlinks, a later `git pull` on this repo updates the running modules immediately — you only need to re-run `install.sh` if new files are added to the repo, not for ordinary updates.
+
+#### `buffer_manager` — host-commanded load/unload
+
+Wraps `buffer_set_mode`/`buffer_query_state` from the firmware. One `[buffer_manager]` section per buffer board:
+
+```ini
+[buffer_manager LLL_PLUS]
+mcu: LLL_PLUS
+feed_speed_mm_s: 20.0   # measure this against your own buffer - don't derive it
+                        # from the VACTUAL/RPM constants in buffer.c, since it
+                        # also depends on your pulley/wheel diameter.
+```
+
+Two gcode commands become available for macros:
+
+```gcode
+BUFFER_SET_MODE BUFFER=LLL_PLUS MODE=FORWARD   ; push filament
+BUFFER_SET_MODE BUFFER=LLL_PLUS MODE=BACK      ; retract filament
+BUFFER_SET_MODE BUFFER=LLL_PLUS MODE=STOP      ; hold
+BUFFER_SET_MODE BUFFER=LLL_PLUS MODE=AUTO      ; hand control back to the
+                                                ; firmware's hall-sensor logic
+BUFFER_QUERY BUFFER=LLL_PLUS                   ; report last known sensor/motor state
+```
+
+A held `FORWARD`/`BACK`/`STOP` is kept alive automatically while your macro runs (re-sent to the MCU every 250 ms); the firmware's own `timeout` watchdog means a crashed or disconnected host can't leave the motor running. Always finish a load/unload macro with `MODE=AUTO` explicitly — don't rely on the watchdog expiring as your normal hand-back path.
+
+#### `filament_watcher` — direction-aware jam detection
+
+Useful with any downstream motion sensor (e.g. a Mellow Fly MDM) — not specific to this buffer board, though `buffer_manager` above is one of the things it can watch for reversal-induced slack:
+
+```ini
+[filament_watcher MDM]
+motion_pin: LLL_PLUS:PA5      # or wherever your MDM/encoder motion pin lives
+detection_length: 3.5         # match your encoder wheel's rated segment spacing
+confirm_window: 0.5           # seconds - two detections within this window before pausing
+
+# name:backlash_mm pairs, comma separated. Each name is a printer object
+# exposing get_position()/get_direction() (or find_past_position(), like
+# extruder). backlash_mm is how far that source can travel after a direction
+# reversal before we start counting missed-pulse distance against
+# detection_length - accounts for slack/tolerance in that source's path to
+# the encoder. Measure both values on your own setup; don't guess them.
+position_sources: extruder:2.0, buffer_manager LLL_PLUS:5.0
+
+runout_gcode:
+    RESPOND MSG="Suspected filament clog"
+    # TOOL is optional - omit it entirely on non-toolchanger setups
+    _FILAMENT_JAM_DETECTED TOOL=T0
+```
+
+`confirm_window` requires two missed-pulse detections within that window before escalating to `runout_gcode` — a single stray miss just logs a warning. Both `detection_length` and every `backlash_mm` value are physical properties of your specific filament path (tube length/stiffness, encoder wheel choice, toolchanger dwell) and need measuring on your own hardware rather than copied from this example.
+
+#### Uninstalling the host-side modules
+
+```bash
+./uninstall.sh
+```
+
+Only removes files it created as symlinks — it won't touch a real file that happens to share the name. It doesn't remove the `[include ...]` line from your `printer.cfg`, or revert the buffer board's own firmware (that's a separate flash step, see [Updating later](#updating-later-no-case-opening) in reverse — flash back a backed-up `.bin` from Step 2 if you want the board off this firmware entirely).
 
 ---
 
@@ -214,6 +228,8 @@ cd ~/klipper && make clean && make          # (re-add the Makefile line if a git
 ```
 
 `flashtool` reboots the running app into Katapult over USB automatically — you can target the **Klipper** serial directly, no buttons.
+
+The host-side modules (`klippy_extras/`, `macros/`) don't need reflashing — `git pull` in this repo updates them immediately since `install.sh` symlinks rather than copies. Run `FIRMWARE_RESTART` after pulling if either module's config or code changed.
 
 ---
 
@@ -258,12 +274,14 @@ Measured over a full print (`klippy.log` / MCU stats):
 
 Validated on **one setup** (FLY LLL Buffer Plus, STM32F072CB).
 
-**Bench-tested & working:**
+**Bench-tested & working (firmware, `src/buffer.c`):**
 - Auto-feed — hall sensors driving the motor (core state machine + `VACTUAL`).
 - Manual **hold** of the feed / retract buttons (KEY1 / KEY2).
 - Runout on `PB7` → print pause.
 
 **Ported faithfully from Mellow's firmware but not individually exercised here** (no hardware/wiring to trigger them on this setup): mainboard signal control (`PB5`/`PB6`), the buttons' single-/double-click side-effects (EXT pin output, pause toggle), and the 60 s jam timeout.
+
+**Host-side modules (`klippy_extras/buffer_manager.py`, `klippy_extras/filament_watcher.py`) are newer and not yet hardware-validated.** The host-commanded mode override and its watchdog fallback are implemented against the firmware commands above but haven't been exercised through a real load/unload cycle yet. The jam-detection backlash/grace logic depends on `detection_length`, `confirm_window`, and every `backlash_mm`/`feed_speed_mm_s` value being measured on real hardware rather than left at example defaults — treat the example config values as starting points, not calibrated numbers.
 
 Pins and register values are specific to this board.
 
@@ -272,6 +290,7 @@ Pins and register values are specific to this board.
 ## Credits
 
 - **[Fly3DTeam / Mellow](https://github.com/Fly3DTeam/Buffer)** — original FLY Buffer firmware & hardware (state machine ported from their open source).
+- **[Nitrooxyde/Mellow-LLL-Plus-Klipper-Firmware](https://github.com/Nitrooxyde/Mellow-LLL-Plus-Klipper-Firmware)** — source for the autonomous smart-buffer auto-feed Klipper firmware this project builds on.
 - **[Klipper](https://github.com/Klipper3d/klipper)** — MCU firmware framework.
 - **[Katapult](https://github.com/Arksine/katapult)** — USB bootloader.
 - Community Klipper integrations: [river29](https://github.com/river29/Mellow-LLLBufferPLUS-klipper), [ss1gohan13](https://github.com/ss1gohan13/BufferPLUS-klipper).
