@@ -38,8 +38,8 @@ if [ ! -f "$SRC_SRC" ]; then
 	echo "ERROR: source file not found: $SRC_SRC" >&2
 	exit 1
 fi
-if [ ! -f "$KLIPPER_SRC" ]; then
-	echo "ERROR: destination file not found: $KLIPPER_SRC" >&2
+if [ ! -d "$KLIPPER_SRC" ]; then
+	echo "ERROR: destination directory not found: $KLIPPER_SRC" >&2
 	exit 1
 fi
 
