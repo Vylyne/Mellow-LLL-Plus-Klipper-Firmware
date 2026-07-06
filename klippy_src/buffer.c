@@ -24,6 +24,7 @@
 #include "autoconf.h"   // CONFIG_CLOCK_FREQ
 #include "board/gpio.h" // gpio_in_setup / gpio_out_setup
 #include "board/misc.h" // timer_read_time
+#include "command.h"    // DECL_COMMAND / sendf
 #include "sched.h"      // DECL_TASK / DECL_INIT
 
 // ------------------------------------------------------------------
@@ -229,8 +230,8 @@ DECL_COMMAND(command_buffer_set_mode, "buffer_set_mode mode=%c timeout=%u");
 void command_buffer_query_state(uint32_t *args)
 {
     sendf("buffer_state hall1=%c hall2=%c hall3=%c fil=%c error=%c state=%c host_mode=%c",
-        gpio_in_read(hall1), gpio_in_read(hall2), gpio_in_read(hall3),
-        gpio_in_read(fil), is_error, last_state, host_mode);
+          gpio_in_read(hall1), gpio_in_read(hall2), gpio_in_read(hall3),
+          gpio_in_read(fil), is_error, last_state, host_mode);
 }
 DECL_COMMAND(command_buffer_query_state, "buffer_query_state");
 
@@ -453,13 +454,17 @@ void buffer_task(void)
         return;
 
     // Adding support for Host commanded moves, while allowing hardware buttons to override.
-    if (host_mode != HMODE_AUTO) {
-        if (timer_read_time() > host_mode_deadline) {
-            host_mode = HMODE_AUTO;   // watchdog: host went silent, don't run forever
-        } else {
+    if (host_mode != HMODE_AUTO)
+    {
+        if (timer_read_time() > host_mode_deadline)
+        {
+            host_mode = HMODE_AUTO; // watchdog: host went silent, don't run forever
+        }
+        else
+        {
             uint8_t want = (host_mode == HMODE_FORWARD) ? ST_FORWARD
-                            : (host_mode == HMODE_BACK)    ? ST_BACK
-                            : ST_STOP;
+                           : (host_mode == HMODE_BACK)  ? ST_BACK
+                                                        : ST_STOP;
             apply_state(want);
             return;
         }
