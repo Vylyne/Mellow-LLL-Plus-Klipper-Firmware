@@ -1,6 +1,43 @@
 #!/bin/bash
+set -euo pipefail
 
-EXTRA_PATH="$HOME/klipper/klippy/extras/filament_motion_watcher.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KLIPPER_EXTRAS="$HOME/klipper/klippy/extras"
+CONFIG_DIR="$HOME/printer_data/config"
 
-echo "Creating Symbolic link to klippy_extras/filament_watcher.py at $EXTRA_PATH"
-ln -sf "$(pwd)/$(dirname "$0")/klippy_extras/filament_watcher.py" "$EXTRA_PATH"
+link_extra() {
+    local filename="$1"
+    local src="$SCRIPT_DIR/klippy_extras/$filename"
+    local dst="$KLIPPER_EXTRAS/$filename"
+    if [ ! -f "$src" ]; then
+        echo "ERROR: source file not found: $src" >&2
+        exit 1
+    fi
+    echo "Linking $filename -> $dst"
+    ln -sf "$src" "$dst"
+}
+
+if [ ! -d "$KLIPPER_EXTRAS" ]; then
+    echo "ERROR: $KLIPPER_EXTRAS not found - is Klipper installed at \$HOME/klipper?" >&2
+    exit 1
+fi
+if [ ! -d "$CONFIG_DIR" ]; then
+    echo "ERROR: $CONFIG_DIR not found - is Moonraker set up at \$HOME/printer_data?" >&2
+    exit 1
+fi
+
+link_extra "filament_watcher.py"
+link_extra "buffer_manager.py"
+
+CFG_SRC="$SCRIPT_DIR/klippy_macros/filament_watcher.cfg"
+CFG_DST="$CONFIG_DIR/filament_watcher.cfg"
+if [ ! -f "$CFG_SRC" ]; then
+    echo "ERROR: source file not found: $CFG_SRC" >&2
+    exit 1
+fi
+echo "Linking config -> $CFG_DST"
+ln -sf "$CFG_SRC" "$CFG_DST"
+
+echo
+echo "Done. Add the following to your printer.cfg, then run FIRMWARE_RESTART:"
+echo "  [include filament_watcher.cfg]"
