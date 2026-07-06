@@ -1,10 +1,18 @@
 # extras/filament_watcher.py
+
 class FilamentWatcher:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
+        self.confirm_window = config.getfloat('confirm_window', 5.0, above=0.)
         self.detection_length = config.getfloat('detection_length', 3.5, above=0.)
-        self.runout_gcode = config.get('runout_gcode', None)
+        
+        # lets compile the runout gcode template now, so we catch errors at startup
+        gcode_macro = self.printer.load_object(config, 'gcode_macro')
+        self.runout_template = None
+        if config.get('runout_gcode', None) is not None:
+            self.runout_template = gcode_macro.load_template(config, 'runout_gcode')
+
         raw_sources = [s.strip() for s in config.get('position_sources').split(',')]
         self.source_names, self.backlash = [], {}
         for entry in raw_sources:
@@ -12,7 +20,7 @@ class FilamentWatcher:
             self.source_names.append(name.strip())
             self.backlash[name.strip()] = float(backlash_mm)
 
-        self.sources = {}          # name -> object, resolved at klippy:ready
+        self.sources = {}
         self.last_pos = {}
         self.last_dir = {}
         self.grace_remaining = {}
@@ -26,11 +34,23 @@ class FilamentWatcher:
         reactor = self.printer.get_reactor()
         reactor.register_timer(self._poll, reactor.NOW)
 
+        self.jam_pending_since = None
+        self.printer.register_event_handler('idle_timeout:printing', self._reset_pending)
+        self.printer.register_event_handler('idle_timeout:ready', self._reset_pending)
+
+    def _read_position(self, obj, eventtime):
+        if hasattr(obj, 'find_past_position'):
+            mcu = self.printer.lookup_object('mcu')
+            print_time = mcu.estimated_print_time(eventtime)
+            return obj.find_past_position(print_time)
+        return obj.get_position(eventtime)
+
     def _handle_ready(self):
+        eventtime = self.printer.get_reactor().monotonic()
         for name in self.source_names:
             obj = self.printer.lookup_object(name)
             self.sources[name] = obj
-            self.last_pos[name] = 0.
+            self.last_pos[name] = self._read_position(obj, eventtime)
             self.last_dir[name] = 0
             self.grace_remaining[name] = 0.
 
@@ -38,15 +58,12 @@ class FilamentWatcher:
         self.distance_since_pulse = 0.
 
     def _poll(self, eventtime):
+        deltas = {}
         in_grace = False
         for name, obj in self.sources.items():
-            if hasattr(obj, 'find_past_position'):
-                mcu = self.printer.lookup_object('mcu')
-                print_time = mcu.estimated_print_time(eventtime)
-                pos = obj.find_past_position(print_time)
-            else:
-                pos = obj.get_position(eventtime)
+            pos = self._read_position(obj, eventtime)
             delta = pos - self.last_pos[name]
+            deltas[name] = delta
             direction = (delta > 0) - (delta < 0)
             if direction and self.last_dir[name] and direction != self.last_dir[name]:
                 self.grace_remaining[name] = self.backlash[name]
@@ -57,22 +74,44 @@ class FilamentWatcher:
                 if self.grace_remaining[name] > 0:
                     in_grace = True
             self.last_pos[name] = pos
-            self.distance_since_pulse += abs(delta)
 
-        if not in_grace and self.distance_since_pulse > self.detection_length:
-            self._trigger_runout()
-            self.distance_since_pulse = 0.  # avoid re-firing every tick
+        if in_grace:
+            self.distance_since_pulse = 0.  # reversal still absorbing backlash - don't count it
+        else:
+            for delta in deltas.values():
+                self.distance_since_pulse += abs(delta)
+            if self.distance_since_pulse > self.detection_length:
+                self._trigger_runout(eventtime)
+                self.distance_since_pulse = 0.
 
-        return eventtime + 0.1  # 100ms poll
+        return eventtime + 0.1
 
-    def _trigger_runout(self):
-        if self.runout_gcode:
-            gcode = self.printer.lookup_object('gcode')
-            template = self.printer.lookup_object('gcode_macro').load_template(
-                self.config, 'runout_gcode')
-            context = template.create_template_context()
+    def _reset_pending(self, eventtime):
+        self.jam_pending_since = None
+        self.distance_since_pulse = 0.
+        for name in self.sources:
+            self.grace_remaining[name] = 0.
+            self.last_dir[name] = 0
+
+    def _trigger_runout(self, eventtime):
+        if self.jam_pending_since is not None and \
+                (eventtime - self.jam_pending_since) <= self.confirm_window:
+            self.jam_pending_since = None
+            self._escalate(eventtime)
+        else:
+            self.jam_pending_since = eventtime
+            self._warn(eventtime)
+
+    def _warn(self, eventtime):
+        gcode = self.printer.lookup_object('gcode')
+        gcode.respond_info("Possible filament jam on %s, watching..." % self.name)
+
+    def _escalate(self, eventtime):
+        if self.runout_template is not None:
+            context = self.runout_template.create_template_context()
             context['params'] = {'TOOL': self.name}
-            gcode.run_script(template.render(context))
+            gcode = self.printer.lookup_object('gcode')
+            gcode.run_script(self.runout_template.render(context))
 
 def load_config_prefix(config):
     return FilamentWatcher(config)
