@@ -2,27 +2,9 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SRC_SRC="$SCRIPT_DIR/klippy_src/buffer.c"
-SRC_DST="$HOME/klipper/src/buffer.c"
-
-if [ ! -f "$SRC_SRC" ]; then
-	echo "ERROR: source file not found: $SRC_SRC" >&2
-	exit 1
-fi
-if [ ! -f "$SRC_DST" ]; then
-	echo "ERROR: destination file not found: $SRC_DST" >&2
-	exit 1
-fi
-
-echo "Linking src -> $SRC_DST"
-ln -sf "$SRC_SRC" "$SRC_DST"
-
-echo
-echo "Done. Add the following to your printer.cfg, then run FIRMWARE_RESTART:"
-echo "  [include filament_watcher.cfg]"
-
 KLIPPER_EXTRAS="$HOME/klipper/klippy/extras"
 CONFIG_DIR="$HOME/printer_data/config"
+KLIPPER_SRC="$HOME/klipper/src"
 
 link_extra() {
     local filename="$1"
@@ -47,6 +29,22 @@ fi
 
 link_extra "filament_watcher.py"
 link_extra "buffer_manager.py"
+
+
+SRC_SRC="$SCRIPT_DIR/klippy_src/buffer.c"
+SRC_DST="$KLIPPER_SRC/buffer.c"
+
+if [ ! -f "$SRC_SRC" ]; then
+	echo "ERROR: source file not found: $SRC_SRC" >&2
+	exit 1
+fi
+if [ ! -f "$KLIPPER_SRC" ]; then
+	echo "ERROR: destination file not found: $KLIPPER_SRC" >&2
+	exit 1
+fi
+
+echo "Linking src -> $SRC_DST"
+ln -sf "$SRC_SRC" "$SRC_DST"
 
 CFG_SRC="$SCRIPT_DIR/klippy_macros/filament_watcher.cfg"
 CFG_DST="$CONFIG_DIR/filament_watcher.cfg"
