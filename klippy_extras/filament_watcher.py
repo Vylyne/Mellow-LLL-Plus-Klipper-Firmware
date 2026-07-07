@@ -12,8 +12,15 @@ class FilamentWatcher:
         self.runout_template = None
         if config.get('runout_gcode', None) is not None:
             self.runout_template = gcode_macro.load_template(config, 'runout_gcode')
+        self.warn_template = None
+        if config.get('warn_gcode', None) is not None:
+            self.warn_template = gcode_macro.load_template(config, 'warn_gcode')
 
         raw_sources = [s.strip() for s in config.get('position_sources').split(',')]
+
+        self.jam_pending_since = None
+        self.escalated = False   # true once confirmed - suppresses repeat escalation
+
         self.source_names, self.backlash = [], {}
         for entry in raw_sources:
             name, backlash_mm = entry.split(':')
@@ -89,14 +96,18 @@ class FilamentWatcher:
     def _reset_pending(self, eventtime):
         self.jam_pending_since = None
         self.distance_since_pulse = 0.
+        self.escalated = False
         for name in self.sources:
             self.grace_remaining[name] = 0.
             self.last_dir[name] = 0
 
     def _trigger_runout(self, eventtime):
+        if self.escalated:
+            return # Already executed escalation - don't repeat.
         if self.jam_pending_since is not None and \
                 (eventtime - self.jam_pending_since) <= self.confirm_window:
             self.jam_pending_since = None
+            self.escalated = True
             self._escalate(eventtime)
         else:
             self.jam_pending_since = eventtime
@@ -105,6 +116,10 @@ class FilamentWatcher:
     def _warn(self, eventtime):
         gcode = self.printer.lookup_object('gcode')
         gcode.respond_info("Possible filament jam on %s, watching..." % self.name)
+        if self.warn_template is not None:
+            context = self.warn_template.create_template_context()
+            context['params'] = {'TOOL': self.name}
+            gcode.run_script(self.warn_template.render(context))
 
     def _escalate(self, eventtime):
         if self.runout_template is not None:
