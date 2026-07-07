@@ -71,7 +71,10 @@ class BufferManager:
         self.set_mode_cmd = self.mcu.lookup_command(
             'buffer_set_mode mode=%c timeout=%u')
         self.query_cmd = self.mcu.lookup_command('buffer_query_state')
-        self.mcu.register_response(self._handle_state, 'buffer_state')
+        if hasattr(self.mcu, 'register_serial_response'):
+            self.mcu.register_serial_response(self._handle_state, 'buffer_state')
+        else:
+            self.mcu.register_response(self._handle_state, 'buffer_state')
         self.reactor.update_timer(self.query_timer, self.reactor.NOW)
 
     def _handle_disconnect(self):
