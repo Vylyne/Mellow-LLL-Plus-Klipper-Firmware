@@ -44,6 +44,23 @@ class FilamentWatcher:
         self.jam_pending_since = None
         self.printer.register_event_handler('idle_timeout:printing', self._reset_pending)
         self.printer.register_event_handler('idle_timeout:ready', self._reset_pending)
+        
+        self.enabled = config.getboolean('enable', True)
+        gcode.register_mux_command(
+            'SET_FILAMENT_SENSOR', 'SENSOR', self.name,
+            self.cmd_SET_FILAMENT_SENSOR,
+            desc="Enable/disable jam detection for this filament_watcher")
+
+    def get_status(self, eventtime):
+        return {
+            'enabled': self.enabled,
+            'filament_detected': not self.escalated,
+        }
+
+    def cmd_SET_FILAMENT_SENSOR(self, gcmd):
+        self.enabled = bool(gcmd.get_int('ENABLE', 1))
+        gcmd.respond_info("Filament watcher %s: %s" %
+                        (self.name, "enabled" if self.enabled else "disabled"))
 
     def _read_position(self, obj, eventtime):
         if hasattr(obj, 'find_past_position'):
@@ -65,6 +82,10 @@ class FilamentWatcher:
         self.distance_since_pulse = 0.
 
     def _poll(self, eventtime):
+        if not self.enabled:
+            for name, obj in self.sources.items():
+                self.last_pos[name] = self._read_position(obj, eventtime)
+            return eventtime + 0.1
         deltas = {}
         in_grace = False
         for name, obj in self.sources.items():
