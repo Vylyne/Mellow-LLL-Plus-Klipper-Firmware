@@ -199,6 +199,10 @@ confirm_window: 0.5           # seconds - two detections within this window befo
 # the encoder. Measure both values on your own setup; don't guess them.
 position_sources: extruder:2.0, buffer_manager LLL_PLUS:5.0
 
+# this gcode executes on first event missed motion event after grace period, intention is for logging.
+warn_gcode:
+    RESPOND MSG="Suspected filament clog on T0 - watching..."
+
 runout_gcode:
     RESPOND MSG="Suspected filament clog"
     # TOOL is optional - omit it entirely on non-toolchanger setups
