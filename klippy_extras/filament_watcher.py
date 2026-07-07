@@ -22,7 +22,6 @@ class FilamentWatcher:
 
         raw_sources = [s.strip() for s in config.get('position_sources').split(',')]
 
-        self.jam_pending_since = None
         self.escalated = False   # true once confirmed - suppresses repeat escalation
 
         self.source_names, self.backlash = [], {}
