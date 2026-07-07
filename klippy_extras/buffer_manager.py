@@ -74,7 +74,7 @@ class BufferManager:
         if hasattr(self.mcu, 'register_serial_response'):
             self.mcu.register_serial_response(self._handle_state, 'buffer_state')
         else:
-            self.mcu.register_response(self._handle_state, 'buffer_state')
+            self.mcu.register_serial_response(self._handle_state, 'buffer_state')
         self.reactor.update_timer(self.query_timer, self.reactor.NOW)
 
     def _handle_disconnect(self):
