@@ -6,6 +6,10 @@ class FilamentWatcher:
         self.name = config.get_name().split()[-1]
         self.confirm_window = config.getfloat('confirm_window', 5.0, above=0.)
         self.detection_length = config.getfloat('detection_length', 3.5, above=0.)
+
+        # alias so Mainsail/Fluidd's sensor panel picks this up like a stock
+        # filament_motion_sensor - same object, second registered name
+        self.printer.add_object('filament_motion_sensor ' + self.name, self)
         
         # lets compile the runout gcode template now, so we catch errors at startup
         gcode_macro = self.printer.load_object(config, 'gcode_macro')
@@ -45,6 +49,7 @@ class FilamentWatcher:
         self.printer.register_event_handler('idle_timeout:printing', self._reset_pending)
         self.printer.register_event_handler('idle_timeout:ready', self._reset_pending)
         
+        gcode = self.printer.lookup_object('gcode')
         self.enabled = config.getboolean('enable', True)
         gcode.register_mux_command(
             'SET_FILAMENT_SENSOR', 'SENSOR', self.name,
