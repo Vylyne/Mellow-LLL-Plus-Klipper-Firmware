@@ -8,12 +8,12 @@
 // Fichier AJOUTÉ (ne modifie aucun fichier Klipper existant) -> survit aux git pull.
 //
 // Convention reprise MOT POUR MOT de buffer.cpp / buffer.h :
-//   光感 (capteur photo) : obstrué = 1, non obstrué = 0  (lecture GPIO directe, PAS d'inversion ^!)
-//   耗材开关 (PB7) : a du filament = 0, pas de filament = 1
-//   按键 (boutons) : pressé = 0, relâché = 1
-//   HALL3 (PB4) obstrué -> Forward (pousse)   [pos1, 耗材往前推]
-//   HALL2 (PB3) obstrué -> Stop               [pos2, 电机停止]
-//   HALL1 (PB2) obstrué -> Back (rétracte)     [pos3, 回退耗材]
+//   photo sensor : obstructed = 1, not obstructed = 0  (direct GPIO playback, NO reversal!)
+//   endstop_3/filament switch (PB7) : Normally Closed, Filament Present = 0, No Filament = 1
+//   buttons : normally closed, pressed = 0, released = 1
+//   HALL3 (PB4) obstructed -> Forward (feed)   [pos1]
+//   HALL2 (PB3) obstructed -> Stop             [pos2]
+//   HALL1 (PB2) obstructed -> Back (retract)   [pos3]
 //
 // SEULE adaptation vs standalone : le maintien bouton (long-press) est géré
 // en événementiel non-bloquant (la boucle while() bloquante du standalone
@@ -32,12 +32,12 @@
 // ------------------------------------------------------------------
 #define GPIO(PORT, NUM) (((PORT) - 'A') * 16 + (NUM))
 
-#define HALL1_PIN GPIO('B', 2)             // 光感3 -> pos3 -> Back
-#define HALL2_PIN GPIO('B', 3)             // 光感2 -> pos2 -> Stop
-#define HALL3_PIN GPIO('B', 4)             // 光感1 -> pos1 -> Forward
-#define FIL_PIN GPIO('B', 7)               // ENDSTOP_3 / 耗材开关 (filament switch)
-#define KEY_INTERNAL_RETRACT GPIO('B', 13) // KEY1 后退 (retract)
-#define KEY_INTERNAL_FEED GPIO('B', 12)    // KEY2 前进 (feed)
+#define HALL1_PIN GPIO('B', 2)             // Optical Sensor 3 -> pos3 -> front sensor, retract.
+#define HALL2_PIN GPIO('B', 3)             // Optical Sensor 2 -> pos2 -> mid sensor, don't push or pull.
+#define HALL3_PIN GPIO('B', 4)             // Optical Sensor 1 -> pos1 -> back sensor, feed.
+#define FIL_PIN GPIO('B', 7)               // ENDSTOP_3 / Filament Entry switch.
+#define KEY_INTERNAL_RETRACT GPIO('B', 13) // KEY1 Retract (retract)
+#define KEY_INTERNAL_FEED GPIO('B', 12)    // KEY2 Feed (feed)
 #define KEY_EXTERNAL_RETRACT GPIO('A', 2)  // Exposed 3 pin header using for external Retract button
 #define KEY_EXTERNAL_FEED GPIO('A', 3)     // Exposed 3 pin header using for external feed buttons
 #define FRONT_SIG_PIN GPIO('B', 5)         // signal carte mère "avance" (actif bas)

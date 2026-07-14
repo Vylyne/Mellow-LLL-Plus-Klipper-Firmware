@@ -24,17 +24,18 @@ QUERY_INTERVAL = 0.25       # seconds between buffer_query_state polls
 
 class BufferManager:
     def __init__(self, config):
-        self.printer = config.get_printer()
-        self.reactor = self.printer.get_reactor()
-        self.name = config.get_name().split()[-1]
+        # ---------------- read configs ---------------
 
+        self.printer = config.get_printer()
+        self.name = config.get_name().split()[-1]
+        self.feed_speed = config.getfloat('feed_speed_mm_s', above=0.)
         mcu_name = config.get('mcu', self.name)
+
         self.mcu = self.printer.lookup_object('mcu ' + mcu_name)
 
-        # mm/s of buffer travel at commanded VACTUAL - measure this, don't
-        # trust a value derived from the firmware's RPM/microstep constants,
-        # since it also depends on pulley/wheel diameter.
-        self.feed_speed = config.getfloat('feed_speed_mm_s', above=0.)
+        # ------------- define variables ------------
+        self.stall_seconds = config.getfloat('stall_seconds', 5.0, above=0.)  # still placeholder
+        self.hall_stuck_since = {1: None, 2: None, 3: None}
 
         self.host_mode = MODE_AUTO
         self.direction = 0
@@ -47,6 +48,9 @@ class BufferManager:
 
         self.set_mode_cmd = None
         self.query_cmd = None
+
+        # ---- Register timers and reactor events ---- 
+        self.reactor = self.printer.get_reactor()
         self.keepalive_timer = self.reactor.register_timer(
             self._keepalive, self.reactor.NEVER)
         self.query_timer = self.reactor.register_timer(
@@ -57,6 +61,7 @@ class BufferManager:
         self.printer.register_event_handler('klippy:disconnect',
                                              self._handle_disconnect)
 
+        # ----------- Render gcode macros -----------
         gcode = self.printer.lookup_object('gcode')
         gcode.register_mux_command(
             'BUFFER_SET_MODE', 'BUFFER', self.name,
@@ -86,18 +91,43 @@ class BufferManager:
     # ---------------- sensor state ----------------
 
     def _handle_state(self, params):
+        eventtime = self.reactor.monotonic()
+        for num, key in ((1, 'hall1'), (2, 'hall2'), (3, 'hall3')):
+            if params[key]:
+                if self.hall_stuck_since[num] is None:
+                    self.hall_stuck_since[num] = eventtime
+            else:
+                self.hall_stuck_since[num] = None
         self.state = {
             'hall1': params['hall1'], 'hall2': params['hall2'],
             'hall3': params['hall3'], 'fil': params['fil'],
             'error': params['error'], 'motor_state': params['state'],
             'host_mode': params['host_mode'],
         }
-        self.last_state_t = self.reactor.monotonic()
+        self.last_state_t = eventtime
+
+    def hall_stuck_seconds(self, hall_num, eventtime=None):
+        since = self.hall_stuck_since.get(hall_num)
+        if since is None:
+            return 0.
+        if eventtime is None:
+            eventtime = self.reactor.monotonic()
+        return eventtime - since
 
     def _do_query(self, eventtime):
         if self.query_cmd is not None:
             self.query_cmd.send()
         return eventtime + QUERY_INTERVAL
+    
+    # Expose status to printer object and moonraker api.
+    def get_status(self, eventtime):
+        status = dict(self.state)
+        status['host_mode_active'] = self.host_mode != MODE_AUTO
+        status['stall_seconds'] = self.stall_seconds
+        status['hall1_stuck_s'] = self.hall_stuck_seconds(1, eventtime)
+        status['hall2_stuck_s'] = self.hall_stuck_seconds(2, eventtime)
+        status['hall3_stuck_s'] = self.hall_stuck_seconds(3, eventtime)
+        return status
 
     # ---------------- mode control ----------------
 
