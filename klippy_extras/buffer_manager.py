@@ -119,7 +119,6 @@ class BufferManager:
             self.query_cmd.send()
         return eventtime + QUERY_INTERVAL
     
-    # Expose status to printer object and moonraker api.
     def get_status(self, eventtime):
         status = dict(self.state)
         status['host_mode_active'] = self.host_mode != MODE_AUTO
