@@ -34,7 +34,7 @@ class BufferManager:
         self.mcu = self.printer.lookup_object('mcu ' + mcu_name)
 
         # ------------- define variables ------------
-        self.stall_seconds = config.getfloat('stall_seconds', 5.0, above=0.)  # still placeholder
+        self.stall_seconds = config.getfloat('stall_seconds', 5.0, above=0.)
         self.hall_stuck_since = {1: None, 2: None, 3: None}
 
         self.host_mode = MODE_AUTO
