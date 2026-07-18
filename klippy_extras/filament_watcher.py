@@ -152,7 +152,6 @@ class FilamentWatcher:
 
     def _warn(self, eventtime):
         gcode = self.printer.lookup_object("gcode")
-        # gcode.respond_info("Possible filament jam on %s, watching..." % self.name)
         if self.warn_template is not None:
             context = self.warn_template.create_template_context()
             context["params"] = {"TOOL": self.name}
