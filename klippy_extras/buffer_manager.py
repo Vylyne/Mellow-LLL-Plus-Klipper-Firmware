@@ -1,11 +1,9 @@
 # extras/buffer_manager.py
 #
 # Host-side interface to the LLL Buffer Plus firmware module (buffer.c).
-# Provides:
-#  - BUFFER_SET_MODE / BUFFER_QUERY gcode commands for load/unload macros
-#  - a position_sources-compatible object (get_position/get_direction) for
-#    [filament_watcher] backlash tracking
-#  - live hall/error state exposed via printer status
+# Forwards the toolhead filament sensor state to the buffer MCU on change,
+# and issues load/unload/mode commands. No periodic host-side polling -
+# the buffer firmware owns its own load/unload state machine.
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -13,222 +11,116 @@ MODE_AUTO = 0
 MODE_FORWARD = 1
 MODE_BACK = 2
 MODE_STOP = 3
-MODE_NAMES = {
-    "AUTO": MODE_AUTO,
-    "FORWARD": MODE_FORWARD,
-    "BACK": MODE_BACK,
-    "STOP": MODE_STOP,
-}
-MODE_DIRECTION = {MODE_AUTO: 0, MODE_FORWARD: 1, MODE_BACK: -1, MODE_STOP: 0}
+MODE_NAMES = {'AUTO': MODE_AUTO, 'FORWARD': MODE_FORWARD,
+              'BACK': MODE_BACK, 'STOP': MODE_STOP}
 
-KEEPALIVE_INTERVAL = 0.25  # seconds between re-armed sends while overridden
-MCU_TIMEOUT_MS = (
-    1000  # firmware watchdog window per send - must be > KEEPALIVE_INTERVAL
-)
-QUERY_INTERVAL = 0.25  # seconds between buffer_query_state polls
+# Mirrors buffer.c's JOB_* / JOB_RESULT_* enums - for readability only,
+# the firmware sends raw ints either way.
+JOB_LOAD = 1
+JOB_UNLOAD = 2
+JOB_RESULT_OK = 0
+JOB_RESULT_STALLED = 1
+JOB_RESULT_TIMEOUT = 2
+JOB_RESULT_INTERRUPTED = 3
 
 
 class BufferManager:
     def __init__(self, config):
-        # ---------------- read configs ---------------
-
         self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
         self.name = config.get_name().split()[-1]
-        self.feed_speed = config.getfloat("feed_speed_mm_s", above=0.0)
-        self.mcu_name = config.get("mcu", self.name)
         self.tool = config.getint('tool', -1)
+        self.mcu_name = config.get('mcu', self.name)
+        self.mcu = self.printer.lookup_object('mcu ' + self.mcu_name)
 
-        self.mcu = self.printer.lookup_object("mcu " + self.mcu_name)
-
-        # ------------- define variables ------------
-        self.stall_seconds = config.getfloat("stall_seconds", 5.0, above=0.0)
-        self.hall_stuck_since = {1: None, 2: None, 3: None}
-
-        self.host_mode = MODE_AUTO
-        self.direction = 0
-        self.est_position = 0.0
-        self.last_update_t = None
-
-        self.state = {
-            "hall1": 0,
-            "hall2": 0,
-            "hall3": 0,
-            "fil": 0,
-            "error": 0,
-            "motor_state": 0,
-            "host_mode": 0,
-        }
-        self.last_state_t = None
+        # Raw pin string (e.g. "EBBT0:PD0"), NOT a filament_switch_sensor
+        # config-section name - we register our own button watcher on the
+        # pin directly, independent of any existing sensor also watching
+        # it (reading a GPIO input isn't exclusive the way owning an
+        # output pin is).
+        self.toolhead_sensor_pin = config.get('toolhead_sensor_pin', None)
+        if self.toolhead_sensor_pin is not None:
+            buttons = self.printer.load_object(config, 'buttons')
+            buttons.register_buttons([self.toolhead_sensor_pin],
+                                      self._toolhead_sensor_event)
 
         self.set_mode_cmd = None
-        self.query_cmd = None
+        self.load_cmd = None
+        self.unload_cmd = None
+        self.set_sensor_cmd = None
+        self.job_pending = False
+        self.last_result = {'status': None, 'reason': None}
 
-        # ---- Register timers and reactor events ----
-        self.reactor = self.printer.get_reactor()
-        self.keepalive_timer = self.reactor.register_timer(
-            self._keepalive, self.reactor.NEVER
-        )
-        self.query_timer = self.reactor.register_timer(
-            self._do_query, self.reactor.NEVER
-        )
+        self.printer.register_event_handler('klippy:connect',
+                                             self._handle_connect)
 
-        self.printer.register_event_handler("klippy:connect", self._handle_connect)
-        self.printer.register_event_handler(
-            "klippy:disconnect", self._handle_disconnect
-        )
-
-        # ----------- Register Commands -----------
-        gcode = self.printer.lookup_object("gcode")
+        gcode = self.printer.lookup_object('gcode')
         gcode.register_mux_command(
-            "BUFFER_SET_MODE",
-            "BUFFER",
-            self.name,
+            'BUFFER_SET_MODE', 'BUFFER', self.name,
             self.cmd_BUFFER_SET_MODE,
-            desc="Override buffer motor mode: MODE=FORWARD|BACK|STOP|AUTO",
-        )
+            desc="Override buffer motor mode: MODE=FORWARD|BACK|STOP|AUTO")
         gcode.register_mux_command(
-            "BUFFER_QUERY",
-            "BUFFER",
-            self.name,
-            self.cmd_BUFFER_QUERY,
-            desc="Report last known buffer sensor/motor state",
-        )
+            'BUFFER_LOAD', 'BUFFER', self.name,
+            self.cmd_BUFFER_LOAD,
+            desc="Trigger firmware-driven load sequence")
+        gcode.register_mux_command(
+            'BUFFER_UNLOAD', 'BUFFER', self.name,
+            self.cmd_BUFFER_UNLOAD,
+            desc="Trigger firmware-driven unload sequence")
 
     def _handle_connect(self):
         self.set_mode_cmd = self.mcu.lookup_command(
-            "buffer_set_mode mode=%c timeout=%u"
-        )
-        self.query_cmd = self.mcu.lookup_command("buffer_query_state")
-        state_format = (
-            "buffer_state hall1=%c hall2=%c hall3=%c fil=%c "
-            "error=%c state=%c host_mode=%c"
-        )
-        if hasattr(self.mcu, "register_serial_response"):
-            self.mcu.register_serial_response(self._handle_state, state_format)
+            'buffer_set_mode mode=%c timeout=%u')
+        self.load_cmd = self.mcu.lookup_command('buffer_load timeout=%u')
+        self.unload_cmd = self.mcu.lookup_command('buffer_unload timeout=%u')
+        self.set_sensor_cmd = self.mcu.lookup_command(
+            'buffer_set_toolhead_sensor state=%c')
+        result_format = 'buffer_result status=%c reason=%c'
+        if hasattr(self.mcu, 'register_serial_response'):
+            self.mcu.register_serial_response(self._handle_result, result_format)
         else:
-            self.mcu.register_response(self._handle_state, state_format)
-        self.reactor.update_timer(self.query_timer, self.reactor.NOW)
+            self.mcu.register_response(self._handle_result, result_format)
 
-    def _handle_disconnect(self):
-        self.reactor.update_timer(self.keepalive_timer, self.reactor.NEVER)
-        self.reactor.update_timer(self.query_timer, self.reactor.NEVER)
+    def _toolhead_sensor_event(self, eventtime, state):
+        if self.set_sensor_cmd is not None:
+            self.set_sensor_cmd.send([1 if state else 0])
 
-    # ---------------- sensor state ----------------
-
-    def _handle_state(self, params):
-        eventtime = self.reactor.monotonic()
-        for num, key in ((1, "hall1"), (2, "hall2"), (3, "hall3")):
-            if params[key]:
-                if self.hall_stuck_since[num] is None:
-                    self.hall_stuck_since[num] = eventtime
-            else:
-                self.hall_stuck_since[num] = None
-        self.state = {
-            "hall1": params["hall1"],
-            "hall2": params["hall2"],
-            "hall3": params["hall3"],
-            "fil": params["fil"],
-            "error": params["error"],
-            "motor_state": params["state"],
-            "host_mode": params["host_mode"],
-        }
-        self.last_state_t = eventtime
-
-    def hall_stuck_seconds(self, hall_num, eventtime=None):
-        since = self.hall_stuck_since.get(hall_num)
-        if since is None:
-            return 0.0
-        if eventtime is None:
-            eventtime = self.reactor.monotonic()
-        return eventtime - since
-
-    def _do_query(self, eventtime):
-        if self.query_cmd is not None:
-            self.query_cmd.send()
-        return eventtime + QUERY_INTERVAL
-
-    def get_status(self, eventtime):
-        status = dict(self.state)
-        status["tool"] = self.tool
-        status["mcu"] = 'mcu ' + self.mcu_name
-        status["host_mode_active"] = self.host_mode != MODE_AUTO
-        status["stall_seconds"] = self.stall_seconds
-        status["hall1_stuck_s"] = self.hall_stuck_seconds(1, eventtime)
-        status["hall2_stuck_s"] = self.hall_stuck_seconds(2, eventtime)
-        status["hall3_stuck_s"] = self.hall_stuck_seconds(3, eventtime)
-        return status
-
-    # ---------------- mode control ----------------
-
-    def _send_mode(self, mode):
-        if self.set_mode_cmd is not None:
-            self.set_mode_cmd.send([mode, MCU_TIMEOUT_MS])
-
-    def _keepalive(self, eventtime):
-        if self.host_mode == MODE_AUTO:
-            return self.reactor.NEVER
-        self._send_mode(self.host_mode)
-        return eventtime + KEEPALIVE_INTERVAL
-
-    def set_mode(self, mode):
-        eventtime = self.reactor.monotonic()
-        self._integrate_position(eventtime)
-        self.host_mode = mode
-        self.direction = MODE_DIRECTION[mode]
-        self._send_mode(mode)
-        if mode == MODE_AUTO:
-            self.reactor.update_timer(self.keepalive_timer, self.reactor.NEVER)
-        else:
-            self.reactor.update_timer(
-                self.keepalive_timer, eventtime + KEEPALIVE_INTERVAL
-            )
+    def _handle_result(self, params):
+        self.job_pending = False
+        self.last_result = {'status': params['status'], 'reason': params['reason']}
 
     def cmd_BUFFER_SET_MODE(self, gcmd):
-        mode_str = gcmd.get("MODE").upper()
+        mode_str = gcmd.get('MODE').upper()
         if mode_str not in MODE_NAMES:
             raise gcmd.error(
                 "Unknown MODE '%s', expected one of %s"
-                % (mode_str, ", ".join(MODE_NAMES))
-            )
-        self.set_mode(MODE_NAMES[mode_str])
+                % (mode_str, ', '.join(MODE_NAMES)))
+        timeout_ms = gcmd.get_int('TIMEOUT', 1000)
+        self.set_mode_cmd.send([MODE_NAMES[mode_str], timeout_ms])
         gcmd.respond_info("Buffer %s mode set to %s" % (self.name, mode_str))
 
-    def cmd_BUFFER_QUERY(self, gcmd):
-        age = "unknown"
-        if self.last_state_t is not None:
-            age = "%.2fs" % (self.reactor.monotonic() - self.last_state_t)
-        gcmd.respond_info(
-            "Buffer %s: hall1=%d hall2=%d hall3=%d fil=%d error=%d "
-            "motor_state=%d host_mode=%d age=%s"
-            % (
-                self.name,
-                self.state["hall1"],
-                self.state["hall2"],
-                self.state["hall3"],
-                self.state["fil"],
-                self.state["error"],
-                self.state["motor_state"],
-                self.state["host_mode"],
-                age,
-            )
-        )
+    def cmd_BUFFER_LOAD(self, gcmd):
+        timeout_ms = gcmd.get_int('TIMEOUT', 60000)
+        self.job_pending = True
+        self.last_result = {'status': None, 'reason': None}
+        self.load_cmd.send([timeout_ms])
+        gcmd.respond_info("Buffer %s: load triggered" % self.name)
 
-    # ------------- position_sources interface (for filament_watcher) -------------
+    def cmd_BUFFER_UNLOAD(self, gcmd):
+        timeout_ms = gcmd.get_int('TIMEOUT', 60000)
+        self.job_pending = True
+        self.last_result = {'status': None, 'reason': None}
+        self.unload_cmd.send([timeout_ms])
+        gcmd.respond_info("Buffer %s: unload triggered" % self.name)
 
-    def _integrate_position(self, eventtime):
-        if self.last_update_t is not None:
-            dt = eventtime - self.last_update_t
-            self.est_position += self.direction * self.feed_speed * dt
-        self.last_update_t = eventtime
-
-    def get_position(self, eventtime=None):
-        if eventtime is None:
-            eventtime = self.reactor.monotonic()
-        self._integrate_position(eventtime)
-        return self.est_position
-
-    def get_direction(self):
-        return self.direction
+    def get_status(self, eventtime):
+        return {
+            'tool': self.tool,
+            'mcu': self.mcu_name,
+            'job_pending': self.job_pending,
+            'last_result_status': self.last_result['status'],
+            'last_result_reason': self.last_result['reason'],
+        }
 
 
 def load_config_prefix(config):
