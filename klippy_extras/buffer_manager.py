@@ -33,16 +33,9 @@ class BufferManager:
         self.mcu_name = config.get('mcu', self.name)
         self.mcu = self.printer.lookup_object('mcu ' + self.mcu_name)
 
-        # Raw pin string (e.g. "EBBT0:PD0"), NOT a filament_switch_sensor
-        # config-section name - we register our own button watcher on the
-        # pin directly, independent of any existing sensor also watching
-        # it (reading a GPIO input isn't exclusive the way owning an
-        # output pin is).
-        self.toolhead_sensor_pin = config.get('toolhead_sensor_pin', None)
-        if self.toolhead_sensor_pin is not None:
-            buttons = self.printer.load_object(config, 'buttons')
-            buttons.register_buttons([self.toolhead_sensor_pin],
-                                      self._toolhead_sensor_event)
+        self.post_extruder_sensor_name = config.get('post_extruder_sensor', None)
+        self.post_extruder_sensor = None
+        self.post_extruder_sensor_button_handler = None
 
         self.set_mode_cmd = None
         self.load_cmd = None
@@ -53,6 +46,9 @@ class BufferManager:
 
         self.printer.register_event_handler('klippy:connect',
                                              self._handle_connect)
+
+        self.printer.register_event_handler("klippy:ready",
+                                             self._handle_klippy_ready)
 
         gcode = self.printer.lookup_object('gcode')
         gcode.register_mux_command(
@@ -81,9 +77,20 @@ class BufferManager:
         else:
             self.mcu.register_response(self._handle_result, result_format)
 
-    def _toolhead_sensor_event(self, eventtime, state):
+    def _handle_klippy_ready(self):
+        if self.post_extruder_sensor_name is not None:
+            try:
+                self.post_extruder_sensor = self.printer.lookup_object(self.post_extruder_sensor_name)
+            except self.printer.config_error as e:
+                return
+            self.post_extruder_sensor_button_handler = self.post_extruder_sensor._button_handler
+            self.post_extruder_sensor._button_handler = self._post_extruder_sensor_event
+
+    def _post_extruder_sensor_event(self, eventtime, state):
         if self.set_sensor_cmd is not None:
             self.set_sensor_cmd.send([1 if state else 0])
+        if self.post_extruder_sensor_button_handler is not None:
+            self.post_extruder_sensor_button_handler(eventtime, state)
 
     def _handle_result(self, params):
         self.job_pending = False
