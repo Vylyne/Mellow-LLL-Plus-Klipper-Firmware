@@ -77,7 +77,7 @@ class BufferManager:
             "klippy:disconnect", self._handle_disconnect
         )
 
-        # ----------- Render gcode macros -----------
+        # ----------- Register Commands -----------
         gcode = self.printer.lookup_object("gcode")
         gcode.register_mux_command(
             "BUFFER_SET_MODE",
