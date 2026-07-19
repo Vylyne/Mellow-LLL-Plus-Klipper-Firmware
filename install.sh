@@ -27,7 +27,6 @@ if [ ! -d "$CONFIG_DIR" ]; then
     exit 1
 fi
 
-link_extra "filament_watcher.py"
 link_extra "buffer_manager.py"
 
 

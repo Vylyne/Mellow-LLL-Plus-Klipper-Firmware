@@ -17,9 +17,7 @@ unlink_if_symlink() {
     fi
 }
 
-unlink_if_symlink "$KLIPPER_EXTRAS/filament_watcher.py"
 unlink_if_symlink "$KLIPPER_EXTRAS/buffer_manager.py"
-unlink_if_symlink "$CONFIG_DIR/macros/filament_watcher.cfg"
 unlink_if_symlink "$CONFIG_DIR/macros/buffer_manager.cfg"
 unlink_if_symlink "$SRC_DST/buffer.c"
 
