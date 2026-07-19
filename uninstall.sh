@@ -19,9 +19,10 @@ unlink_if_symlink() {
 
 unlink_if_symlink "$KLIPPER_EXTRAS/filament_watcher.py"
 unlink_if_symlink "$KLIPPER_EXTRAS/buffer_manager.py"
-unlink_if_symlink "$CONFIG_DIR/filament_watcher.cfg"
+unlink_if_symlink "$CONFIG_DIR/macros/filament_watcher.cfg"
+unlink_if_symlink "$CONFIG_DIR/macros/buffer_manager.cfg"
 unlink_if_symlink "$SRC_DST/buffer.c"
 
 echo
 echo "Done. Remove this line from printer.cfg if present, then run FIRMWARE_RESTART:"
-echo "  [include filament_watcher.cfg]"
+echo "  [include macros/buffer_manager.cfg]"

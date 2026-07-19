@@ -75,7 +75,7 @@ class BufferManager:
         self.unload_cmd = self.mcu.lookup_command('buffer_unload timeout=%u')
         self.set_sensor_cmd = self.mcu.lookup_command(
             'buffer_set_toolhead_sensor state=%c')
-        result_format = 'buffer_result status=%c reason=%c'
+        result_format = 'buffer_result status=%c job=%c'
         if hasattr(self.mcu, 'register_serial_response'):
             self.mcu.register_serial_response(self._handle_result, result_format)
         else:
@@ -87,7 +87,7 @@ class BufferManager:
 
     def _handle_result(self, params):
         self.job_pending = False
-        self.last_result = {'status': params['status'], 'reason': params['reason']}
+        self.last_result = {'status': params['status'], 'job': params['job']}
 
     def cmd_BUFFER_SET_MODE(self, gcmd):
         mode_str = gcmd.get('MODE').upper()
@@ -119,7 +119,7 @@ class BufferManager:
             'mcu': self.mcu_name,
             'job_pending': self.job_pending,
             'last_result_status': self.last_result['status'],
-            'last_result_reason': self.last_result['reason'],
+            'last_result_job': self.last_result['job'],
         }
 
 

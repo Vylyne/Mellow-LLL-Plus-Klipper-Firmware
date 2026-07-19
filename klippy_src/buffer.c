@@ -57,16 +57,14 @@
 // meaning "no filament present". Your printer.cfg's
 // [filament_switch_sensor T0_mdm_filament] uses a plain `^T0_buffer:PA4`
 // (no `!` inversion) unlike the entrance switch's `^!`. This constant must
-// match that same polarity. If UNLOAD never completes, or completes
-// immediately when it shouldn't, flip this to 1.
-#define MDM_FIL_NO_FILAMENT_STATE 0
+#define MDM_FIL_NO_FILAMENT_STATE 1
 
 // ------------------------------------------------------------------
-// Parameters (copied from standalone firmware, unmodified)
+// Parameters (copied from standalone firmware)
 // ------------------------------------------------------------------
 // VACTUAL = SPEED * microsteps * 200 / 60 / 0.715   (buffer.cpp)
 //   SPEED = 260 rpm, microsteps = 64 -> 77575 (matches the standalone's int cast)
-#define SPEED_RPM 400
+#define SPEED_RPM 400 //(doubled speed)
 #define MICROSTEPS_DIV 64
 #define VACTUAL_MAG ((int32_t)((int64_t)SPEED_RPM * MICROSTEPS_DIV * 200 / 60 * 1000 / 715))
 
@@ -336,9 +334,8 @@ start_job(uint8_t job, uint32_t timeout_ms)
 static void
 send_job_result(uint8_t job, uint8_t status)
 {
-    sendf("buffer_result status=%c reason=%c", status, job);
+    sendf("buffer_result status=%c job=%c", status, job);
 }
-
 // ------------------------------------------------------------------
 // Init (at boot) - GPIO only (self-contained). Ports buffer_sensor_init.
 // ------------------------------------------------------------------

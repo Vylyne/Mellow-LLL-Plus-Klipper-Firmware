@@ -46,8 +46,8 @@ fi
 echo "Linking src -> $SRC_DST"
 ln -sf "$SRC_SRC" "$SRC_DST"
 
-CFG_SRC="$SCRIPT_DIR/klippy_macros/filament_watcher.cfg"
-CFG_DST="$CONFIG_DIR/filament_watcher.cfg"
+CFG_SRC="$SCRIPT_DIR/klippy_macros/buffer_manager.cfg"
+CFG_DST="$CONFIG_DIR/macros/buffer_manager.cfg"
 if [ ! -f "$CFG_SRC" ]; then
     echo "ERROR: source file not found: $CFG_SRC" >&2
     exit 1
@@ -57,4 +57,4 @@ ln -sf "$CFG_SRC" "$CFG_DST"
 
 echo
 echo "Done. Add the following to your printer.cfg, then run FIRMWARE_RESTART:"
-echo "  [include filament_watcher.cfg]"
+echo "  [include macros/buffer_manager.cfg]"
