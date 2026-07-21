@@ -64,7 +64,7 @@
 // ------------------------------------------------------------------
 // VACTUAL = SPEED * microsteps * 200 / 60 / 0.715   (buffer.cpp)
 //   SPEED = 260 rpm, microsteps = 64 -> 77575 (matches the standalone's int cast)
-#define SPEED_RPM 400 //(doubled speed)
+#define SPEED_RPM 260
 #define MICROSTEPS_DIV 64
 #define VACTUAL_MAG ((int32_t)((int64_t)SPEED_RPM * MICROSTEPS_DIV * 200 / 60 * 1000 / 715))
 
